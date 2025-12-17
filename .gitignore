@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+# Node
+node_modules/
+dist/
+# Env
+.env
+# Uploads (可选)
+uploads/

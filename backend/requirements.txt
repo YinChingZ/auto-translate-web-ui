@@ -1,0 +1,16 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+sqlalchemy>=2.0.0
+aiosqlite>=0.19.0
+redis>=5.0.0
+celery>=5.3.0
+ffmpeg-python>=0.2.0
+silero-vad>=4.0.0
+openai-whisper>=20231117
+python-multipart>=0.0.6
+pydantic-settings>=2.0.0
+numpy
+torch
+openai>=1.0.0
+aiofiles>=23.0.0
+python-dotenv>=1.0.0

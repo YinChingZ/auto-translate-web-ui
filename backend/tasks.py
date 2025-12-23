@@ -60,6 +60,17 @@ async def _save_subtitles_and_complete(video_id: uuid.UUID, segments: list):
         print(f"Saved {len(segments)} subtitles for video {video_id}, status set to READY")
 
 
+async def _get_video_config(video_id: uuid.UUID):
+    """
+    获取视频配置
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Video).where(Video.id == video_id))
+        video = result.scalars().first()
+        if video and video.config:
+            return video.config
+        return {}
+
 @celery_app.task(bind=True, max_retries=3)
 def process_video_task(self, video_id_str: str, file_path: str):
     """
@@ -73,10 +84,22 @@ def process_video_task(self, video_id_str: str, file_path: str):
     print(f"Starting video processing task for {video_id}")
     
     try:
+        # 获取视频配置
+        config = asyncio.run(_get_video_config(video_id))
+        batch_size = config.get("batch_size", settings.translation_batch_size)
+        context_window = config.get("context_window", 3)
+        whisper_model = config.get("whisper_model", settings.whisper_model)
+        print(f"Task config loaded: batch_size={batch_size}, context_window={context_window}, whisper_model={whisper_model}")
+
         # 1. 调用 pipeline 处理视频（提取音频 -> VAD -> Whisper）
         # 这是 CPU 密集型操作
-        print(f"Processing video file: {file_path}")
-        segments = process_video(file_path)
+        print(f"Processing video file: {file_path} with batch_size={batch_size}, context_window={context_window}, whisper_model={whisper_model}")
+        segments = process_video(
+            file_path, 
+            batch_size=batch_size,
+            context_window=context_window,
+            whisper_model=whisper_model
+        )
         print(f"Pipeline returned {len(segments)} segments")
         
         # 2. 批量保存字幕到数据库，并更新状态为 READY

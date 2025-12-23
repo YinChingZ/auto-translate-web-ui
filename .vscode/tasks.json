@@ -1,0 +1,73 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Backend",
+			"type": "shell",
+			"command": "${workspaceFolder}/backend/venv/Scripts/uvicorn",
+			"args": [
+				"backend.main:app",
+				"--reload",
+				"--reload-dir",
+				"backend"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"isBackground": true,
+			"problemMatcher": [
+				"$python"
+			],
+			"group": "none",
+			"presentation": {
+				"reveal": "always",
+				"panel": "new"
+			}
+		},
+		{
+			"label": "Run Celery Worker",
+			"type": "shell",
+			"command": "${workspaceFolder}/backend/venv/Scripts/celery",
+			"args": [
+				"-A",
+				"backend.tasks.celery_app",
+				"worker",
+				"--loglevel=info",
+				"-P",
+				"solo"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "none",
+			"presentation": {
+				"reveal": "always",
+				"panel": "new"
+			}
+		},
+		{
+			"label": "Run Frontend",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"dev"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}/frontend",
+				"env": {
+					"PATH": "C:\\Program Files\\nodejs;${env:PATH}"
+				}
+			},
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "none",
+			"presentation": {
+				"reveal": "always",
+				"panel": "new"
+			}
+		}
+	]
+}

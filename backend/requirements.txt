@@ -10,7 +10,7 @@ openai-whisper>=20231117
 python-multipart>=0.0.6
 pydantic-settings>=2.0.0
 numpy
-torch
+soundfile
 openai>=1.0.0
 aiofiles>=23.0.0
 python-dotenv>=1.0.0

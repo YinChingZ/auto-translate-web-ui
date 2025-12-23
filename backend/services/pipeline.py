@@ -17,7 +17,10 @@ def get_openai_client() -> OpenAI:
     if client is None:
         if not settings.openai_api_key:
             raise ValueError("OpenAI API key is not configured. Please set OPENAI_API_KEY in .env file.")
-        client = OpenAI(api_key=settings.openai_api_key)
+        client = OpenAI(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url
+        )
     return client
 
 # 翻译配置（从配置文件加载）
@@ -52,20 +55,44 @@ def get_vad_segments(audio_path: str) -> List[Dict[str, int]]:
                                   force_reload=False,
                                   trust_repo=True)
     
-    (get_speech_timestamps, _, read_audio, _, _) = utils
+    (get_speech_timestamps, _, _, _, _) = utils
     
-    wav = read_audio(audio_path)
+    # Custom read_audio using soundfile to avoid torchaudio/torchcodec issues
+    import soundfile as sf
+    import numpy as np
+    
+    data, samplerate = sf.read(audio_path)
+    # Ensure float32
+    if data.dtype != np.float32:
+        data = data.astype(np.float32)
+    # Ensure mono
+    if len(data.shape) > 1:
+        data = data.mean(axis=1)
+    # Convert to tensor
+    wav = torch.from_numpy(data)
+    # Ensure 1D tensor
+    if wav.dim() > 1:
+        wav = wav.squeeze()
+    
     # 采样率必须与 extract_audio 中设置的一致 (16000)
     speech_timestamps = get_speech_timestamps(wav, model, sampling_rate=16000)
     return speech_timestamps
 
-def transcribe_with_whisper(audio_path: str, vad_segments: List[Dict[str, int]]) -> List[Dict[str, Any]]:
+def transcribe_with_whisper(
+    audio_path: str, 
+    vad_segments: List[Dict[str, int]],
+    model_name: str = settings.whisper_model
+) -> List[Dict[str, Any]]:
     """
     Step 3: 调用 Whisper 识别
     仅对 VAD 检测到的片段进行识别，避免静音部分的幻觉
     """
-    # 加载 Whisper 模型（从配置文件加载模型名称）
-    model = whisper.load_model(settings.whisper_model)
+    # 检查是否有可用的 GPU
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device} for Whisper transcription")
+
+    # 加载 Whisper 模型
+    model = whisper.load_model(model_name, device=device)
     
     # 加载完整音频到内存 (numpy array)
     audio = whisper.load_audio(audio_path)
@@ -80,8 +107,9 @@ def transcribe_with_whisper(audio_path: str, vad_segments: List[Dict[str, int]])
         segment_audio = audio[start_sample:end_sample]
         
         # Whisper 识别
-        # fp16=False 确保在 CPU 上也能运行，如果有 GPU 可以设为 True
-        result = model.transcribe(segment_audio, fp16=False)
+        # 如果是 CUDA，使用 fp16=True，否则使用 fp16=False
+        # 强制指定语言为英语，提高准确率
+        result = model.transcribe(segment_audio, fp16=(device == "cuda"), language="en")
         
         transcriptions.append({
             "start": start_sample / 16000.0, # 转换为秒
@@ -93,139 +121,130 @@ def transcribe_with_whisper(audio_path: str, vad_segments: List[Dict[str, int]])
     return transcriptions
 
 
-def _build_translation_prompt(texts: List[str], target_language: str) -> str:
+def _build_single_translation_prompt(
+    text: str, 
+    target_language: str, 
+    context_before: str = "", 
+    context_after: str = "",
+    previous_translated: str = ""
+) -> str:
     """
-    构建翻译 prompt
+    构建单句翻译 prompt
     """
-    numbered_texts = "\n".join([f"{i+1}. {text}" for i, text in enumerate(texts)])
-    
-    prompt = f"""You are a professional subtitle translator. Translate the following sentences to {target_language}.
+    context_section = ""
+    if context_before:
+        context_section += f"Previous original text: \"{context_before}\"\n"
+    if context_after:
+        context_section += f"Next original text: \"{context_after}\"\n"
+    if previous_translated:
+        context_section += f"Previously translated text: \"{previous_translated}\"\n"
+
+    prompt = f"""You are a professional subtitle translator. Translate the following sentence to {target_language}.
+
+Context information:
+{context_section}
 
 Rules:
-1. Maintain the original meaning and tone
-2. Keep translations concise and suitable for subtitles
-3. Return ONLY a valid JSON array, no other text
-4. Each object must have "index" (1-based), "translated_text", and "confidence" (0.0-1.0) fields
+1. Focus on reasonable segmentation and semantic coherence.
+2. Maintain consistency with the previously translated text.
+3. Return ONLY the translated text, no explanations or JSON.
 
-Sentences to translate:
-{numbered_texts}
-
-Respond with a JSON array like:
-[{{{"index": 1, "translated_text": "翻译内容", "confidence": 0.95}}}, ...]"""
-    
+Sentence to translate:
+"{text}"
+"""
     return prompt
 
 
-def _call_llm_for_translation(texts: List[str], target_language: str) -> List[Dict[str, Any]]:
+def translate_single_text(
+    text: str, 
+    target_language: str = TARGET_LANGUAGE, 
+    context_before: str = "", 
+    context_after: str = "",
+    previous_translated: str = ""
+) -> str:
     """
-    调用 OpenAI API 进行翻译
+    翻译单句文本
     """
-    prompt = _build_translation_prompt(texts, target_language)
-    openai_client = get_openai_client()
+    if not text.strip():
+        return ""
+        
+    prompt = _build_single_translation_prompt(
+        text, 
+        target_language, 
+        context_before, 
+        context_after,
+        previous_translated
+    )
     
+    client = get_openai_client()
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",  # 性价比较高的模型
+        response = client.chat.completions.create(
+            model=settings.openai_model,
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are a professional translator. Always respond with valid JSON only."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
+                {"role": "system", "content": "You are a professional translator."},
+                {"role": "user", "content": prompt}
             ],
-            temperature=0.3,  # 降低随机性，提高翻译一致性
-            response_format={"type": "json_object"}  # 强制 JSON 输出
+            temperature=0.3
         )
-        
-        # 解析响应
-        content = response.choices[0].message.content
-        result = json.loads(content)
-        
-        # 处理可能的嵌套结构（有些模型会返回 {"translations": [...]}）
-        if isinstance(result, dict):
-            # 尝试找到数组
-            for key in ["translations", "results", "data"]:
-                if key in result and isinstance(result[key], list):
-                    return result[key]
-            # 如果是单个翻译结果的字典
-            if "translated_text" in result:
-                return [result]
-        
-        return result if isinstance(result, list) else []
-        
-    except json.JSONDecodeError as e:
-        print(f"Failed to parse LLM response as JSON: {e}")
-        # 返回空翻译，保留原文
-        return [{"index": i+1, "translated_text": "", "confidence": 0.0} for i in range(len(texts))]
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"LLM API call failed: {e}")
-        raise RuntimeError(f"Translation failed: {e}")
+        print(f"Translation failed: {e}")
+        return text
 
 
-def translate_segments(segments: List[Dict[str, Any]], target_language: str = TARGET_LANGUAGE) -> List[Dict[str, Any]]:
+def translate_segments(
+    segments: List[Dict[str, Any]], 
+    target_language: str = TARGET_LANGUAGE,
+    batch_size: int = 1, # Deprecated, kept for compatibility
+    context_window: int = 3
+) -> List[Dict[str, Any]]:
     """
-    Step 4: 使用 LLM 翻译字幕片段
-    
-    Args:
-        segments: 包含 text_original 的字幕片段列表
-        target_language: 目标语言，默认为中文
-    
-    Returns:
-        更新后的 segments，每个片段增加 text_translated 和更新的 confidence 字段
+    Step 4: 使用 LLM 逐句翻译字幕片段
     """
     if not segments:
         return segments
     
-    # 提取所有原始文本
     texts = [seg.get("text_original", "") for seg in segments]
+    translated_texts = []
     
-    # 分批处理
-    all_translations = []
-    for i in range(0, len(texts), TRANSLATION_BATCH_SIZE):
-        batch_texts = texts[i:i + TRANSLATION_BATCH_SIZE]
-        batch_start_idx = i
-        
-        print(f"Translating batch {i // TRANSLATION_BATCH_SIZE + 1}/{(len(texts) - 1) // TRANSLATION_BATCH_SIZE + 1}...")
-        
-        # 调用 LLM 翻译
-        batch_results = _call_llm_for_translation(batch_texts, target_language)
-        
-        # 将结果映射回原始索引
-        for result in batch_results:
-            # result 的 index 是 1-based 的批次内索引
-            batch_idx = result.get("index", 1) - 1
-            global_idx = batch_start_idx + batch_idx
-            
-            if 0 <= global_idx < len(segments):
-                all_translations.append({
-                    "global_idx": global_idx,
-                    "translated_text": result.get("translated_text", ""),
-                    "confidence": result.get("confidence", 0.0)
-                })
+    print(f"Starting sentence-by-sentence translation for {len(texts)} segments...")
     
-    # 更新 segments
-    for trans in all_translations:
-        idx = trans["global_idx"]
-        if 0 <= idx < len(segments):
-            segments[idx]["text_translated"] = trans["translated_text"]
-            # 综合 Whisper 置信度和翻译置信度
-            original_confidence = segments[idx].get("confidence", 1.0)
-            translation_confidence = trans["confidence"]
-            # 取两者的平均作为最终置信度
-            segments[idx]["confidence"] = (original_confidence + translation_confidence) / 2
-    
-    # 确保所有 segment 都有 text_translated 字段
-    for seg in segments:
-        if "text_translated" not in seg:
-            seg["text_translated"] = ""
+    for i, text in enumerate(texts):
+        # 获取上下文
+        start_idx = max(0, i - context_window)
+        end_idx = min(len(texts), i + 1 + context_window)
+        
+        context_before = "\n".join(texts[start_idx:i])
+        context_after = "\n".join(texts[i+1:end_idx])
+        
+        # 获取已翻译的上下文（取最近 context_window 句）
+        prev_trans_start = max(0, len(translated_texts) - context_window)
+        previous_translated = "\n".join(translated_texts[prev_trans_start:])
+        
+        print(f"Translating segment {i+1}/{len(texts)}...")
+        
+        translated = translate_single_text(
+            text, 
+            target_language, 
+            context_before=context_before, 
+            context_after=context_after,
+            previous_translated=previous_translated
+        )
+        translated_texts.append(translated)
+        
+        # 更新 segment
+        segments[i]["text_translated"] = translated
+        # 简单设置置信度
+        segments[i]["confidence"] = 0.9 
     
     return segments
 
-
-def process_video(video_path: str) -> List[Dict[str, Any]]:
+def process_video(
+    video_path: str, 
+    batch_size: int = TRANSLATION_BATCH_SIZE,
+    context_window: int = 3,
+    whisper_model: str = settings.whisper_model
+) -> List[Dict[str, Any]]:
     """
     核心处理流程函数
     """
@@ -234,8 +253,10 @@ def process_video(video_path: str) -> List[Dict[str, Any]]:
         
     # 生成临时音频文件路径
     base_name = os.path.splitext(os.path.basename(video_path))[0]
-    # 建议将临时文件放在专门的 temp 目录，这里为了演示放在同级或系统 temp
-    temp_audio_path = f"/tmp/{base_name}_temp.wav"
+    # 使用 uploads 目录下的 temp 子目录，避免跨平台路径问题
+    temp_dir = os.path.join(os.path.dirname(video_path), "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_audio_path = os.path.join(temp_dir, f"{base_name}_temp.wav")
     
     try:
         # 1. 提取音频
@@ -249,12 +270,16 @@ def process_video(video_path: str) -> List[Dict[str, Any]]:
         print(f"Detected {len(vad_segments)} speech segments.")
         
         # 3. Whisper 识别
-        print("Step 3: Transcribing with Whisper...")
-        subtitles = transcribe_with_whisper(temp_audio_path, vad_segments)
+        print(f"Step 3: Transcribing with Whisper (Model: {whisper_model})...")
+        subtitles = transcribe_with_whisper(temp_audio_path, vad_segments, model_name=whisper_model)
         
         # 4. LLM 翻译
         print("Step 4: Translating with LLM...")
-        subtitles = translate_segments(subtitles)
+        subtitles = translate_segments(
+            subtitles, 
+            batch_size=batch_size,
+            context_window=context_window
+        )
         
         print("Processing complete.")
         return subtitles

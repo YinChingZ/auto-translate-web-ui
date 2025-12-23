@@ -1,7 +1,7 @@
 import uuid
 import enum
-from typing import List, Optional
-from sqlalchemy import String, Float, ForeignKey, Enum as SAEnum
+from typing import List, Optional, Dict, Any
+from sqlalchemy import String, Float, ForeignKey, Enum as SAEnum, JSON
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.ext.asyncio import AsyncAttrs
 
@@ -31,6 +31,9 @@ class Video(Base):
     )
     # 视频时长（秒），上传初期可能未知，设为可空
     duration: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    
+    # 存储视频特定的配置（如翻译批次大小、上下文窗口等）
+    config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
 
     # 建立与 Subtitle 的一对多关系
     subtitles: Mapped[List["Subtitle"]] = relationship(

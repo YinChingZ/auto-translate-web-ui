@@ -11,6 +11,11 @@ export const UploadZone: React.FC = () => {
   const [status, setStatus] = useState<UploadStatus>('idle');
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
+  
+  // Settings state
+  const [batchSize, setBatchSize] = useState(15);
+  const [contextWindow, setContextWindow] = useState(3);
+  const [whisperModel, setWhisperModel] = useState('base');
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
@@ -18,6 +23,9 @@ export const UploadZone: React.FC = () => {
     const file = acceptedFiles[0];
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('batch_size', batchSize.toString());
+    formData.append('context_window', contextWindow.toString());
+    formData.append('whisper_model', whisperModel);
 
     setStatus('uploading');
     setProgress(0);
@@ -51,7 +59,7 @@ export const UploadZone: React.FC = () => {
         setErrorMessage('Network error. Please try again.');
       }
     }
-  }, [navigate]);
+  }, [navigate, batchSize, contextWindow, whisperModel]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -68,6 +76,46 @@ export const UploadZone: React.FC = () => {
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-gray-800 mb-2">Auto Translate</h1>
           <p className="text-gray-600">Upload your video to start automatic translation</p>
+        </div>
+
+        {/* Settings Panel */}
+        <div className="bg-white rounded-xl p-6 shadow-sm mb-6 border border-gray-100">
+            <h3 className="text-sm font-semibold text-gray-700 mb-4 uppercase tracking-wider">Translation Settings</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Whisper Model
+                        <span className="ml-1 text-gray-400 font-normal text-xs" title="Model size for transcription">(Accuracy vs Speed)</span>
+                    </label>
+                    <select
+                        value={whisperModel}
+                        onChange={(e) => setWhisperModel(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm"
+                    >
+                        <option value="tiny">Tiny (Fastest, Low Accuracy)</option>
+                        <option value="base">Base (Balanced)</option>
+                        <option value="small">Small (Better Accuracy)</option>
+                        <option value="medium">Medium (High Accuracy, Slow)</option>
+                        <option value="large">Large (Best Accuracy, Very Slow)</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">Select the model size for speech recognition.</p>
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Context Window
+                        <span className="ml-1 text-gray-400 font-normal text-xs" title="Number of sentences to look ahead/behind">(Sentences)</span>
+                    </label>
+                    <input 
+                        type="number" 
+                        min="0" 
+                        max="10"
+                        value={contextWindow}
+                        onChange={(e) => setContextWindow(parseInt(e.target.value) || 3)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Sentences used for context before/after each batch.</p>
+                </div>
+            </div>
         </div>
 
         <div

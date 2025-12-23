@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     应用配置类，使用 pydantic-settings 从环境变量加载配置
     """
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.path.join(os.path.dirname(__file__), ".env"),
         env_file_encoding="utf-8",
         extra="ignore"
     )
@@ -22,9 +22,11 @@ class Settings(BaseSettings):
     
     # OpenAI API 配置
     openai_api_key: Optional[str] = None
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-4o-mini"
     
     # Whisper 模型配置
-    whisper_model: str = "base"
+    whisper_model: str = "medium"
     
     # 翻译配置
     target_language: str = "Chinese"
